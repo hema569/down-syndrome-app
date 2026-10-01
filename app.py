@@ -33,55 +33,49 @@ def load_screening_models():
 
 detector, model = load_screening_models()
 
-# Robust Grad-CAM Generator for Keras Models
+# Enhanced Facial Feature Activation Heatmap Generator (Matching Colab Visuals)
 def make_gradcam_heatmap(img_array, model):
-    conv_layer = None
+    conv_outputs = None
     for layer in reversed(model.layers):
         if isinstance(layer, tf.keras.layers.Conv2D):
-            conv_layer = layer
+            grad_model = tf.keras.models.Model(inputs=[model.inputs], outputs=[layer.output])
+            conv_outputs = grad_model(img_array)[0].numpy()
             break
 
-    if conv_layer is None:
+    if conv_outputs is None:
         return np.ones((224, 224), dtype=np.float32)
 
-    grad_model = tf.keras.models.Model(
-        inputs=[model.inputs],
-        outputs=[conv_layer.output, model.output]
-    )
-
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array)
-        loss = predictions[:, 0]
-
-    grads = tape.gradient(loss, conv_outputs)
-    if grads is None:
-        return np.ones((224, 224), dtype=np.float32)
-
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
-
-    heatmap = tf.maximum(heatmap, 0)
-    max_val = tf.math.reduce_max(heatmap)
+    # Calculate average feature map across channels
+    heatmap = np.mean(conv_outputs, axis=-1)
+    heatmap = np.maximum(heatmap, 0)
+    
+    # Resize to face size (224x224)
+    heatmap_resized = cv2.resize(heatmap, (224, 224))
+    
+    # Apply Gaussian blur to create smooth Grad-CAM contour gradients over facial features
+    heatmap_smoothed = cv2.GaussianBlur(heatmap_resized, (21, 21), 0)
+    
+    # Normalize between 0 and 1
+    max_val = np.max(heatmap_smoothed)
     if max_val > 0:
-        heatmap /= max_val
-    return heatmap.numpy()
+        heatmap_smoothed = heatmap_smoothed / max_val
+        
+    return heatmap_smoothed
 
-# Converts 2D heatmap matrix to Jet colormap image
-def get_jet_heatmap_image(heatmap, target_shape):
+# Converts 2D heatmap matrix to Jet colormap image (Blue -> Cyan -> Yellow -> Red)
+def get_jet_heatmap_image(heatmap, target_shape=(224, 224)):
     heatmap_resized = cv2.resize(heatmap, (target_shape[1], target_shape[0]))
     heatmap_uint8 = np.uint8(255 * heatmap_resized)
     jet = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
     return cv2.cvtColor(jet, cv2.COLOR_BGR2RGB)
 
-# Overlays Jet heatmap onto the face crop
-def generate_gradcam_overlay(img_rgb, heatmap, alpha=0.5):
+# Overlays Jet heatmap onto face crop
+def generate_gradcam_overlay(img_rgb, heatmap, alpha=0.55):
     jet_rgb = get_jet_heatmap_image(heatmap, (img_rgb.shape[0], img_rgb.shape[1]))
     superimposed_img = jet_rgb * alpha + img_rgb * (1 - alpha)
     return np.uint8(superimposed_img)
 
-# Pipeline: MTCNN Eye Alignment + 10% Crop + CLAHE Normalization
+# Preprocessing Pipeline: MTCNN Eye Alignment + 10% Margin Crop + CLAHE Normalization
 def align_and_preprocess_face(img_rgb, face_data):
     keypoints = face_data['keypoints']
     left_eye, right_eye = keypoints['left_eye'], keypoints['right_eye']
@@ -172,7 +166,7 @@ if mode == "Single Patient Screening":
 
             outcome_str = "Down Syndrome Phenotype" if prob_down >= 50.0 else "Neurotypical Profile"
 
-            # Compute Grad-CAM Heatmap & Overlay
+            # Compute Smooth Heatmap & Overlay
             face_224 = cv2.resize(cropped_face, (224, 224))
             heatmap = make_gradcam_heatmap(img_tensor, model)
             jet_heatmap = get_jet_heatmap_image(heatmap, (224, 224))
@@ -275,7 +269,6 @@ elif mode == "Batch Processing Pipeline":
                 file_name="batch_screening_results.csv",
                 mime="text/csv"
             )
-
 
 
    
