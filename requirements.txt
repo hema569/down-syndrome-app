@@ -4,3 +4,4 @@ opencv-python-headless
 mtcnn
 reportlab
 numpy
+gdown
